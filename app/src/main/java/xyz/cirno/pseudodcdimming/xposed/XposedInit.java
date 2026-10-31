@@ -9,6 +9,7 @@ import android.os.Parcelable;
 import android.os.ServiceManager;
 import android.util.Log;
 
+import java.lang.reflect.Method;
 import java.util.Locale;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -25,6 +26,8 @@ import xyz.cirno.pseudodcdimming.ServiceDiscoveryResult;
 public class XposedInit implements IXposedHookLoadPackage {
     private static final String TAG = "PseudoDcBacklight.Xposed";
     private static final String ATTACHED_IS_INTERNAL = "xyz.cirno.pseudodcbacklight.isInternal";
+    // Vendor overloads may delegate to each other.
+    private static final ThreadLocal<Integer> SET_BACKLIGHT_DEPTH = new ThreadLocal<>();
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if ("android".equals(lpparam.packageName)) {
@@ -47,38 +50,41 @@ public class XposedInit implements IXposedHookLoadPackage {
 
         final var localDisplayAdapter = XposedHelpers.findClass( "com.android.server.display.LocalDisplayAdapter", classLoader);
 
-        final var backlightAdapter_setBacklight = XposedHelpers.findMethodExact(
-            backlightAdapter,
-            "setBacklight",
-            float.class,  // sdrBacklight
-            float.class,  // sdrNits
-            float.class,  // backlight
-            float.class   // nits
-        );
-        // Xiaomi HyperOS 2 compat
-        var backlightAdapter_setBacklight_hookTarget = backlightAdapter_setBacklight;
-        var miuiVersion = XposedHelpers.callStaticMethod(
-            XposedHelpers.findClass("android.os.SystemProperties", classLoader),
-            "get",
-            "ro.mi.os.version.name"
-        );
-        if("OS2.0".equals(miuiVersion)) {
-            try {
-                final var backlightAdapter_setBacklight_miui = XposedHelpers.findMethodExact(
-                    backlightAdapter,
-                    "setBacklight",
-                    float.class,  // sdrBacklight
-                    float.class,  // sdrNits
-                    float.class,  // backlight
-                    float.class,  // nits
-                    boolean.class     // galleryHdrBoost
-                );
-                Log.i(TAG, "HyperOS 2 detected, using dedicated hook target");
-                backlightAdapter_setBacklight_hookTarget = backlightAdapter_setBacklight_miui;
-            } catch (NoSuchMethodError e) {
-                Log.i(TAG, "HyperOS 2 detected, but the HyperOS-specific hook target couldn't be found; ignoring");
-            }
+        Method setBacklight4 = null;
+        Method setBacklight5 = null;
+        try {
+            setBacklight4 = XposedHelpers.findMethodExact(
+                backlightAdapter,
+                "setBacklight",
+                float.class,  // sdrBacklight
+                float.class,  // sdrNits
+                float.class,  // backlight
+                float.class   // nits
+            );
+        } catch (NoSuchMethodError e) {
+            Log.i(TAG, "4-argument setBacklight() not found");
         }
+        try {
+            setBacklight5 = XposedHelpers.findMethodExact(
+                backlightAdapter,
+                "setBacklight",
+                float.class,  // sdrBacklight
+                float.class,  // sdrNits
+                float.class,  // backlight
+                float.class,  // nits
+                boolean.class // galleryHdrBoost
+            );
+        } catch (NoSuchMethodError e) {
+            Log.i(TAG, "5-argument setBacklight() not found");
+        }
+        if (setBacklight4 == null && setBacklight5 == null) {
+            throw new NoSuchMethodError("No usable BacklightAdapter.setBacklight() overload");
+        }
+        final var refreshSetBacklight = setBacklight5 != null
+                ? setBacklight5
+                : setBacklight4;
+        Log.i(TAG, "Using " + refreshSetBacklight.getParameterCount()
+                + "-argument setBacklight() for refresh calls");
 
         XposedHelpers.findAndHookConstructor(localDisplayDevice,
             localDisplayAdapter,     // [surrounding this]
@@ -120,70 +126,17 @@ public class XposedInit implements IXposedHookLoadPackage {
                                 staticInfo.isInternal
                         );
                         if (staticInfo.isInternal) {
-                            overrideService.backlightAdapter = new BacklightAdapterProxy(param.thisObject, backlightAdapter_setBacklight);
+                            overrideService.backlightAdapter = new BacklightAdapterProxy(param.thisObject, refreshSetBacklight);
                         }
                     }
                 });
 
-        XposedBridge.hookMethod(backlightAdapter_setBacklight_hookTarget, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                // void setBacklight(float sdrBacklight, float sdrNits, float backlight, float nits)
-                final var isInternal = XposedHelpers.getAdditionalInstanceField(param.thisObject, ATTACHED_IS_INTERNAL);
-                if (isInternal == null || !((boolean)isInternal)) return;
-                final var requestSdrBacklight = (float)param.args[0];
-                final var requestSdrNits = (float)param.args[1];
-                final var requestBacklight = (float)param.args[2];
-                final var requestNits = (float)param.args[3];
-
-                var request = new BacklightRequest(requestSdrBacklight, requestSdrNits, requestBacklight, requestNits);
-
-                var prevOverride = overrideService.getLastBacklightOverrideState();
-                var overrideState = overrideService.getOverrideBacklightAndGain(request);
-
-                var overrideBacklight = overrideState.overrideRequest;
-                param.args[0] = overrideBacklight.sdrBacklightLevel;
-                param.args[1] = overrideBacklight.sdrBacklightNits;
-                param.args[2] = overrideBacklight.backlightLevel;
-                param.args[3] = overrideBacklight.backlightNits;
-                // HyperOS 2: leave galleryHdrBoost argument unchanged
-                Log.d(TAG, String.format(Locale.ROOT, "setBacklight(%f->%f, %f->%f, %f->%f, %f->%f)",
-                        requestSdrBacklight,
-                        overrideBacklight.sdrBacklightLevel,
-                        requestSdrNits,
-                        overrideBacklight.sdrBacklightNits,
-                        requestBacklight,
-                        overrideBacklight.backlightLevel,
-                        requestNits,
-                        overrideBacklight.backlightNits));
-
-                if (overrideBacklight.backlightLevel > prevOverride.overrideRequest.backlightLevel) {
-                    // increased hardware brightness:
-                    // set gain -> darker
-                    // set brightness -> brighter
-                    param.getExtra().putFloat("setGainAfterBrightness", -1.0f);
-                    overrideService.setTransformGain(overrideState.gain);
-                } else {
-                    // decreased hardware brightness:
-                    // set brightness -> darker
-                    // set gain -> brighter
-                    // a dark spike is more acceptable than a bright spike
-                    param.getExtra().putFloat("setGainAfterBrightness", overrideState.gain);
-                }
-            }
-
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                if (param.hasThrowable()) {
-                    return;
-                }
-                var lateGain = param.getExtra().getFloat("setGainAfterBrightness", -1.0f);
-                if (lateGain > 0.0f) {
-                    overrideService.setTransformGain(lateGain);
-                }
-                overrideService.notifyAllListeners();
-            }
-        });
+        if (setBacklight4 != null) {
+            hookSetBacklight(setBacklight4, overrideService);
+        }
+        if (setBacklight5 != null) {
+            hookSetBacklight(setBacklight5, overrideService);
+        }
 
         final var binderServiceClass = XposedHelpers.findClass("com.android.server.display.DisplayManagerService$BinderService", classLoader);
         XposedHelpers.findAndHookMethod("android.hardware.display.IDisplayManager$Stub", classLoader,
@@ -226,6 +179,95 @@ public class XposedInit implements IXposedHookLoadPackage {
                     }
                 }
             });
+    }
+
+    private static void hookSetBacklight(Method setBacklight, BacklightOverrideService overrideService) {
+        XposedBridge.hookMethod(setBacklight, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                final var currentDepth = SET_BACKLIGHT_DEPTH.get();
+                final int depth = currentDepth == null ? 0 : currentDepth;
+                SET_BACKLIGHT_DEPTH.set(depth + 1);
+
+                final var isInternal = XposedHelpers.getAdditionalInstanceField(param.thisObject, ATTACHED_IS_INTERNAL);
+                if (depth > 0 || isInternal == null || !((boolean) isInternal)) {
+                    param.getExtra().putBoolean("handledByModule", false);
+                    return;
+                }
+
+                param.getExtra().putBoolean("handledByModule", true);
+                try {
+                    applyBacklightOverride(param, overrideService);
+                } catch (Throwable t) {
+                    param.getExtra().putBoolean("handledByModule", false);
+                    Log.e(TAG, "failed to override backlight", t);
+                }
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                try {
+                    if (!param.getExtra().getBoolean("handledByModule", false)) {
+                        return;
+                    }
+                    if (param.hasThrowable()) {
+                        return;
+                    }
+                    var lateGain = param.getExtra().getFloat("setGainAfterBrightness", -1.0f);
+                    if (lateGain > 0.0f) {
+                        overrideService.setTransformGain(lateGain);
+                    }
+                    overrideService.notifyAllListeners();
+                } finally {
+                    final var currentDepth = SET_BACKLIGHT_DEPTH.get();
+                    if (currentDepth == null || currentDepth <= 1) {
+                        SET_BACKLIGHT_DEPTH.remove();
+                    } else {
+                        SET_BACKLIGHT_DEPTH.set(currentDepth - 1);
+                    }
+                }
+            }
+        });
+    }
+
+    private static void applyBacklightOverride(XC_MethodHook.MethodHookParam param, BacklightOverrideService overrideService) {
+        final var requestSdrBacklight = (float) param.args[0];
+        final var requestSdrNits = (float) param.args[1];
+        final var requestBacklight = (float) param.args[2];
+        final var requestNits = (float) param.args[3];
+
+        if (param.args.length > 4) {
+            overrideService.setGalleryHdrBoost((boolean) param.args[4]);
+        }
+
+        var request = new BacklightRequest(requestSdrBacklight, requestSdrNits, requestBacklight, requestNits);
+
+        var prevOverride = overrideService.getLastBacklightOverrideState();
+        var overrideState = overrideService.getOverrideBacklightAndGain(request);
+
+        var overrideBacklight = overrideState.overrideRequest;
+        param.args[0] = overrideBacklight.sdrBacklightLevel;
+        param.args[1] = overrideBacklight.sdrBacklightNits;
+        param.args[2] = overrideBacklight.backlightLevel;
+        param.args[3] = overrideBacklight.backlightNits;
+        Log.d(TAG, String.format(Locale.ROOT, "setBacklight(%f->%f, %f->%f, %f->%f, %f->%f)",
+                requestSdrBacklight,
+                overrideBacklight.sdrBacklightLevel,
+                requestSdrNits,
+                overrideBacklight.sdrBacklightNits,
+                requestBacklight,
+                overrideBacklight.backlightLevel,
+                requestNits,
+                overrideBacklight.backlightNits));
+
+        if (overrideBacklight.backlightLevel > prevOverride.overrideRequest.backlightLevel) {
+            // Raise hardware brightness before dimming to avoid a bright flash.
+            param.getExtra().putFloat("setGainAfterBrightness", -1.0f);
+            overrideService.setTransformGain(overrideState.gain);
+        } else {
+            // Apply the gain after lowering hardware brightness; a dark flash is preferable.
+            param.getExtra().putFloat("setGainAfterBrightness", overrideState.gain);
+        }
     }
 
     private static boolean isInternalDisplay(Object staticInfo, boolean isDefaultDisplay) {

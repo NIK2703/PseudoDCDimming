@@ -1,0 +1,19 @@
+// Compile-only stubs; LSPosed provides the real Xposed API at runtime.
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'de.robv.android.xposed'
+    compileSdk 36
+
+    defaultConfig {
+        minSdk 32
+        targetSdk 32
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

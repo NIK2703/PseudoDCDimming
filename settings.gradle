@@ -1,8 +1,8 @@
 pluginManagement {
     repositories {
-        gradlePluginPortal()
         google()
         mavenCentral()
+        gradlePluginPortal()
     }
 }
 dependencyResolutionManagement {
@@ -10,23 +10,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-
-        maven {
-            url "https://api.xposed.info/"
-            content {
-                includeGroup("de.robv.android.xposed")
-            }
-        }
-    }
-
-    versionCatalogs {
-        libs {
-            version("refine", "4.3.0")
-            plugin('refine', 'dev.rikka.tools.refine').versionRef('refine')
-        }
     }
 }
 
 rootProject.name = "PseudoDcBacklight"
 include ':app'
 include ':hidden-api'
+include ':xposed-api'

@@ -3,11 +3,6 @@ package xyz.cirno.pseudodcdimming;
 import android.os.Parcel;
 import android.os.Parcelable;
 
-import androidx.annotation.NonNull;
-
-import net.jcip.annotations.Immutable;
-
-@Immutable
 public final class BacklightRequest implements Parcelable {
     public final float sdrBacklightLevel;
     public final float sdrBacklightNits;
@@ -47,7 +42,7 @@ public final class BacklightRequest implements Parcelable {
             } finally {
                 in.setDataPosition(pos0 + size);
             }
-            return new BacklightRequest(_backlightLevel, _backlightNits, _sdrBacklightLevel, _sdrBacklightNits);
+            return new BacklightRequest(_sdrBacklightLevel, _sdrBacklightNits, _backlightLevel, _backlightNits);
         }
 
         @Override
@@ -62,7 +57,7 @@ public final class BacklightRequest implements Parcelable {
     }
 
     @Override
-    public void writeToParcel(@NonNull Parcel dest, int flags) {
+    public void writeToParcel(Parcel dest, int flags) {
         final var pos0 = dest.dataPosition();
         dest.writeInt(0);
         dest.writeFloat(backlightLevel);

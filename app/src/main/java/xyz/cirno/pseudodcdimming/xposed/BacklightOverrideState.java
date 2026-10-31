@@ -1,10 +1,7 @@
 package xyz.cirno.pseudodcdimming.xposed;
 
-import net.jcip.annotations.Immutable;
-
 import xyz.cirno.pseudodcdimming.BacklightRequest;
 
-@Immutable
 public final class BacklightOverrideState {
     public final BacklightRequest overrideRequest;
     public final float gain;

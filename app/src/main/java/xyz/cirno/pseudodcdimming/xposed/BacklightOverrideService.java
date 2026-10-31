@@ -30,7 +30,7 @@ public class BacklightOverrideService {
     private volatile BacklightOverrideState lastBacklightOverride = BacklightOverrideState.INVALID;
     private volatile BacklightOverridePreferenceLocal preference = BacklightOverridePreferenceLocal.DEFAULT;
     public float deviceMinimumBacklightNits = Float.NaN;
-    public BacklightAdapterProxy backlightAdapter;
+    public volatile BacklightAdapterProxy backlightAdapter;
     public DisplayDeviceConfigProxy displayDeviceConfig;
     private ExecutorService callbackExecutor;
     private final List<IBacklightOverrideStateListener> callbacks = new ArrayList<>();
@@ -191,6 +191,13 @@ public class BacklightOverrideService {
         return result;
     }
 
+    public void setGalleryHdrBoost(boolean galleryHdrBoost) {
+        final var adapter = backlightAdapter;
+        if (adapter != null) {
+            adapter.setGalleryHdrBoost(galleryHdrBoost);
+        }
+    }
+
     public BacklightRequest getLastBacklightRequest() {
         return lastBacklightRequest;
     }
@@ -241,6 +248,9 @@ public class BacklightOverrideService {
                 overrideSdrBacklight = overrideBacklight;
                 overrideSdrNits = overrideNits;
             }
+        }
+        if (!Float.isFinite(gain) || gain <= 0.0f) {
+            gain = 1.0f;
         }
         var override = new BacklightRequest(
                 overrideSdrBacklight,

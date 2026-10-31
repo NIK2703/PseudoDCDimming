@@ -1,8 +1,5 @@
 package xyz.cirno.pseudodcdimming.xposed;
 
-import net.jcip.annotations.Immutable;
-
-@Immutable
 public final class BacklightOverridePreferenceLocal {
     public final boolean enabled;
     public final float minimumOverrideBacklightLevel;
